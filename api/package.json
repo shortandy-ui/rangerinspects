@@ -1,0 +1,12 @@
+{
+  "name": "datchworth-ranger-inspections-api",
+  "version": "1.0.0",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.6.0",
+    "@azure/storage-blob": "^12.26.0"
+  }
+}
