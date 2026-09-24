@@ -21,9 +21,9 @@ const worstOf = (items) => {
   for (const k in items) { const s = items[k]?.status; if (s && ST[s] && (!w || ST[s].r > ST[w].r)) w = s }
   return w
 }
-const blankForm = (area = '') => ({ id: null, area, date: today(), inspector: ls('ranger-name') || '', items: {}, comments: '' })
+const blankForm = (areaId = '') => ({ id: null, areaId, date: today(), inspector: ls('ranger-name') || '', items: {}, comments: '' })
 
-const cachedSetup = () => { try { return JSON.parse(ls('ranger-setup') || 'null') } catch { return null } }
+const cachedSetup = () => { try { const s = JSON.parse(ls('ranger-setup') || 'null'); return s && s.version === 2 ? s : null } catch { return null } }
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(() => !!login.get())
@@ -137,7 +137,6 @@ function Main({ onLogout }) {
   }, [refresh, flush])
 
   const areas = setup?.areas || []
-  const checks = setup?.checks || []
 
   const allInspections = useMemo(() => {
     const ids = new Set(inspections.map((i) => i.id))
@@ -145,13 +144,16 @@ function Main({ onLogout }) {
   }, [inspections, queued])
 
   const openInspection = (rec) => {
+    const a = findArea(areas, rec)
     setForm({
-      id: rec.id, area: rec.area, date: rec.date, inspector: rec.inspector || '',
+      id: rec.id, areaId: a ? a.id : '', areaName: rec.area, date: rec.date, inspector: rec.inspector || '',
       comments: rec.comments || '', items: JSON.parse(JSON.stringify(rec.items || {})), createdAt: rec.createdAt
     })
     go('inspect')
     window.scrollTo({ top: 0 })
   }
+
+  const setAdmin = (pw) => { setAdminPw(pw); try { pw ? sessionStorage.setItem('ranger-admin', pw) : sessionStorage.removeItem('ranger-admin') } catch {} }
 
   return (
     <div className="wrap">
@@ -159,13 +161,13 @@ function Main({ onLogout }) {
         <div className="brand">
           <div className="logo-plate"><img src="/logo.jpg" alt="Datchworth Parish Council" /></div>
           <div className="brand-text">
-          <h1>Ranger Inspections</h1>
-          <small>
-            <button className="addnote" style={{ marginRight: 10, font: '500 12px var(--mono)' }} onClick={() => onLogout()}>Log out</button>
-            {status === 'loading' ? 'Connecting…' : status === 'online'
-              ? `${inspections.length} inspection${inspections.length === 1 ? '' : 's'} on record`
-              : 'Offline'}
-          </small>
+            <h1>Ranger Inspections</h1>
+            <small>
+              <button className="addnote" style={{ marginRight: 10, font: '500 12px var(--mono)' }} onClick={() => onLogout()}>Log out</button>
+              {status === 'loading' ? 'Connecting…' : status === 'online'
+                ? `${inspections.length} inspection${inspections.length === 1 ? '' : 's'} on record`
+                : 'Offline'}
+            </small>
           </div>
         </div>
         <nav className="tabs" role="tablist">
@@ -190,69 +192,95 @@ function Main({ onLogout }) {
       )}
 
       {status === 'loading' && !setup && <section className="view"><div className="empty">Loading…</div></section>}
-      {status === 'offline' && !setup && <OfflineSetupNote />}
+      {status === 'offline' && !setup && (
+        <section className="view"><div className="empty">This device hasn't loaded the checklists yet. Open the app once with a signal and it will then work offline.</div></section>
+      )}
 
       {setup && tab === 'inspect' && (
         <InspectView
-          areas={areas} checks={checks} form={form} setForm={setForm} toast={toast}
+          setup={setup} form={form} setForm={setForm} toast={toast}
           online={status === 'online'} adminPw={adminPw} onLogout={onLogout}
           onSaved={(rec, wasQueued) => {
             if (wasQueued) setQueued(pending.get())
             else setInspections((list) => [rec, ...list.filter((i) => i.id !== rec.id)])
-            setForm(blankForm(rec.area))
+            setForm(blankForm(rec.areaId))
             window.scrollTo({ top: 0 })
           }}
           onDeleted={(id) => { setInspections((l) => l.filter((i) => i.id !== id)); setForm(blankForm()) }}
         />
       )}
       {setup && tab === 'inspect' && (
-        <AdminPanel
-          setup={setup} setSetup={setSetup} adminPw={adminPw}
-          setAdminPw={(pw) => { setAdminPw(pw); try { pw ? sessionStorage.setItem('ranger-admin', pw) : sessionStorage.removeItem('ranger-admin') } catch {} }}
-          toast={toast} online={status === 'online'}
-        />
+        <AdminPanel setup={setup} setSetup={(s) => { setSetup(s); ls('ranger-setup', JSON.stringify(s)) }}
+          adminPw={adminPw} setAdminPw={setAdmin} toast={toast} online={status === 'online'} />
       )}
       {setup && tab === 'history' && <HistoryView areas={areas} list={allInspections} onOpen={openInspection} />}
-      {setup && tab === 'year' && <YearView areas={areas} checks={checks} list={allInspections} onOpen={openInspection} />}
+      {setup && tab === 'year' && <YearView setup={setup} list={allInspections} onOpen={openInspection} />}
 
       {toastMsg && <div className="toast" role="status">{toastMsg}</div>}
     </div>
   )
 }
 
-function OfflineSetupNote() {
-  return (
-    <section className="view">
-      <div className="empty">This device hasn't loaded the list of areas yet. Open the app once with a signal and it will then work offline.</div>
-    </section>
-  )
+/* ---------- checklist helpers ---------- */
+
+// A saved inspection belongs to an area by id (new records) or by name (older ones).
+function findArea(areas, rec) {
+  return areas.find((a) => a.id === rec.areaId) || areas.find((a) => a.name === rec.area) || null
 }
+function sectionsFor(setup, area) {
+  if (!area) return []
+  const common = { id: 'common', title: setup.commonTitle || 'Green Areas & Common Land', common: true, items: setup.common || [] }
+  return [common, ...area.sections].filter((s) => s.items.length)
+}
+const recordMatchesArea = (rec, area) => rec.areaId ? rec.areaId === area.id : rec.area === area.name
 
 /* ------------------------------------------------------------------ */
 
-function InspectView({ areas, checks, form, setForm, toast, online, adminPw, onLogout, onSaved, onDeleted }) {
+function InspectView({ setup, form, setForm, toast, online, adminPw, onLogout, onSaved, onDeleted }) {
   const [saving, setSaving] = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [openNotes, setOpenNotes] = useState({})
   useEffect(() => { setConfirmDel(false); setOpenNotes({}) }, [form.id])
 
+  const area = setup.areas.find((a) => a.id === form.areaId) || null
+  const sections = sectionsFor(setup, area)
+  const allItems = sections.flatMap((s) => s.items.map((i) => ({ ...i, section: s.title })))
+
+  // Items on an older saved inspection that are no longer on the checklist.
+  const known = new Set(allItems.map((i) => i.id))
+  const retired = Object.entries(form.items || {}).filter(([k, v]) => !known.has(k) && v && v.status)
+
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
   const setItem = (id, patch) => setForm((f) => ({ ...f, items: { ...f.items, [id]: { ...(f.items[id] || {}), ...patch } } }))
 
+  // "Everything in order" ticks: mark a whole section (or the whole area) OK and fold the list away.
+  const [opened, setOpened] = useState({})
+  useEffect(() => { setOpened({}) }, [form.id, form.areaId])
+  const setAllOk = (list, on) => setForm((f) => {
+    const items = { ...f.items }
+    list.forEach((i) => {
+      if (on) items[i.id] = { ...(items[i.id] || {}), status: 'ok' }
+      else if (items[i.id]?.status === 'ok') items[i.id] = { ...items[i.id], status: '' }
+    })
+    return { ...f, items }
+  })
+  const isAllOk = (list) => list.length > 0 && list.every((i) => form.items[i.id]?.status === 'ok')
+
   const counts = { ok: 0, mon: 0, act: 0, na: 0 }
   let done = 0
-  checks.forEach((c) => { const s = form.items[c.id]?.status; if (s) { counts[s]++; done++ } })
+  allItems.forEach((c) => { const s = form.items[c.id]?.status; if (s) { counts[s]++; done++ } })
 
   const save = async () => {
-    if (!form.area) { toast('Choose an area first'); return }
+    if (!area) { toast('Choose an area first'); return }
     if (!form.date) { toast('Add the inspection date'); return }
-    const marked = checks.filter((c) => form.items[c.id]?.status)
-    if (!marked.length) { toast('Mark at least one check before saving'); return }
+    const marked = allItems.filter((c) => form.items[c.id]?.status)
+    if (!marked.length && !retired.length) { toast('Mark at least one item before saving'); return }
     const items = {}
-    marked.forEach((c) => { const it = form.items[c.id]; items[c.id] = { status: it.status, note: (it.note || '').trim(), label: c.label } })
+    marked.forEach((c) => { const it = form.items[c.id]; items[c.id] = { status: it.status, note: (it.note || '').trim(), label: c.label, section: c.section } })
+    retired.forEach(([k, v]) => { items[k] = v })
     const now = new Date().toISOString()
     const rec = {
-      id: form.id || newId(), area: form.area, date: form.date, inspector: (form.inspector || '').trim(),
+      id: form.id || newId(), areaId: area.id, area: area.name, date: form.date, inspector: (form.inspector || '').trim(),
       items, comments: (form.comments || '').trim(), worst: worstOf(items),
       createdAt: form.createdAt || now, updatedAt: now
     }
@@ -284,15 +312,35 @@ function InspectView({ areas, checks, form, setForm, toast, online, adminPw, onL
     } catch (e) { toast("Couldn't delete: " + e.message) }
   }
 
-  const areaOptions = form.area && !areas.includes(form.area) ? [...areas, form.area] : areas
+  const row = (c, it) => {
+    const showNote = it.status === 'act' || it.status === 'mon' || openNotes[c.id] || !!it.note
+    return (
+      <div key={c.id} className="row" data-s={it.status || ''}>
+        <div className="row-top">
+          <span className="name">{c.label}</span>
+          <div className="seg" role="group" aria-label={c.label}>
+            {ORDER.map((v) => (
+              <button key={v} type="button" data-v={v} aria-pressed={it.status === v} title={ST[v].long}
+                onClick={() => setItem(c.id, { status: it.status === v ? '' : v })}>{ST[v].l}</button>
+            ))}
+          </div>
+        </div>
+        {showNote
+          ? <textarea id={'note-' + c.id} className="note" style={{ display: 'block' }} rows={2} value={it.note || ''}
+              placeholder={it.status === 'act' ? 'What needs doing, and where exactly?' : it.status === 'mon' ? 'What to keep an eye on?' : 'Specify location / detail'}
+              onChange={(e) => setItem(c.id, { note: e.target.value })} />
+          : <button type="button" className="addnote" onClick={() => setOpenNotes((o) => ({ ...o, [c.id]: true }))}>+ Add detail</button>}
+      </div>
+    )
+  }
 
   return (
     <section className="view">
       <div className="meta">
         <label className="f full">Area
-          <select id="f-area" value={form.area} onChange={(e) => set({ area: e.target.value })}>
+          <select id="f-area" value={area ? area.id : ''} onChange={(e) => set({ areaId: e.target.value })}>
             <option value="" disabled>Choose an area…</option>
-            {areaOptions.map((a) => <option key={a} value={a}>{a}</option>)}
+            {setup.areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </label>
         <label className="f">Date
@@ -303,43 +351,66 @@ function InspectView({ areas, checks, form, setForm, toast, online, adminPw, onL
         </label>
       </div>
 
-      <div className="sheet">
-        <div className="sheet-head">
-          <h2>{form.area || 'Checks'}</h2>
-          <div className="tally">
-            <span className="pill p-none">{done}/{checks.length} done</span>
-            {counts.act > 0 && <span className="pill p-act">{counts.act} action</span>}
-            {counts.mon > 0 && <span className="pill p-mon">{counts.mon} monitor</span>}
-          </div>
-        </div>
-        {checks.map((c) => {
-          const it = form.items[c.id] || {}
-          const showNote = it.status === 'act' || it.status === 'mon' || openNotes[c.id] || !!it.note
-          return (
-            <div key={c.id} className="row" data-s={it.status || ''}>
-              <div className="row-top">
-                <span className="name">{c.label}</span>
-                <div className="seg" role="group" aria-label={c.label}>
-                  {ORDER.map((v) => (
-                    <button key={v} type="button" data-v={v} aria-pressed={it.status === v} title={ST[v].long}
-                      onClick={() => setItem(c.id, { status: it.status === v ? '' : v })}>{ST[v].l}</button>
-                  ))}
-                </div>
-              </div>
-              {showNote
-                ? <textarea id={'note-' + c.id} className="note" style={{ display: 'block' }} rows={2} value={it.note || ''}
-                    placeholder={it.status === 'act' ? 'What needs doing, and where exactly?' : it.status === 'mon' ? 'What to keep an eye on?' : 'Specify location / detail'}
-                    onChange={(e) => setItem(c.id, { note: e.target.value })} />
-                : <button type="button" className="addnote" onClick={() => setOpenNotes((o) => ({ ...o, [c.id]: true }))}>+ Add detail</button>}
-            </div>
-          )
-        })}
-      </div>
+      {form.id && !area && form.areaName && (
+        <div className="banner">This inspection is for “{form.areaName}”, which is no longer in the list of areas. Choose an area to re-save it.</div>
+      )}
 
-      <label className="f">General comments
-        <textarea id="f-comments" rows={3} value={form.comments} placeholder="Anything else the Clerk should know about this visit"
-          onChange={(e) => set({ comments: e.target.value })} />
-      </label>
+      {area && (
+        <label className={'inorder whole' + (isAllOk(allItems) ? ' on' : '')}>
+          <input id="area-in-order" type="checkbox" checked={isAllOk(allItems)} onChange={(e) => setAllOk(allItems, e.target.checked)} />
+          <span><b>Whole area in order</b><small>Ticks all {allItems.length} items at {area.name} as OK</small></span>
+        </label>
+      )}
+
+      {area && (
+        <div className="progress">
+          <span className="pill p-none">{done}/{allItems.length} checked</span>
+          {counts.act > 0 && <span className="pill p-act">{counts.act} action</span>}
+          {counts.mon > 0 && <span className="pill p-mon">{counts.mon} monitor</span>}
+        </div>
+      )}
+
+      {sections.map((sec) => {
+        const secDone = sec.items.filter((i) => form.items[i.id]?.status).length
+        const allInOrder = isAllOk(sec.items)
+        const folded = allInOrder && !opened[sec.id]
+        return (
+          <div className="sheet" key={sec.id}>
+            <div className="sheet-head">
+              <h2>{sec.title}{sec.common && <span className="sub">every area</span>}</h2>
+              <div className="tally">
+                <span className="pill p-none">{secDone}/{sec.items.length}</span>
+              </div>
+            </div>
+            <label className={'inorder' + (allInOrder ? ' on' : '')}>
+              <input id={'in-order-' + sec.id} type="checkbox" checked={allInOrder} onChange={(e) => setAllOk(sec.items, e.target.checked)} />
+              <span><b>Everything in order</b><small>Ticks {sec.items.length === 1 ? 'this item' : 'all ' + sec.items.length + ' items'} as OK</small></span>
+            </label>
+            {folded
+              ? <button type="button" className="addnote folded" onClick={() => setOpened((o) => ({ ...o, [sec.id]: true }))}>Show {sec.items.length === 1 ? 'the item' : 'the ' + sec.items.length + ' items'}</button>
+              : sec.items.map((c) => row(c, form.items[c.id] || {}))}
+          </div>
+        )
+      })}
+
+      {retired.length > 0 && (
+        <div className="sheet">
+          <div className="sheet-head"><h2>No longer on the checklist</h2></div>
+          {retired.map(([k, v]) => (
+            <div key={k} className="row" data-s={v.status}>
+              <div className="row-top"><span className="name">{v.label || k}</span><span className={'pill p-' + ST[v.status].c}>{ST[v.status].long}</span></div>
+              {v.note && <div className="hint">{v.note}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {area && (
+        <label className="f">General comments
+          <textarea id="f-comments" rows={3} value={form.comments} placeholder="Anything else the Clerk should know about this visit"
+            onChange={(e) => set({ comments: e.target.value })} />
+        </label>
+      )}
 
       <div className="actions">
         <button className="btn" onClick={save} disabled={saving}>{saving ? 'Saving…' : form.id ? 'Save changes' : 'Save inspection'}</button>
@@ -362,8 +433,6 @@ function InspectView({ areas, checks, form, setForm, toast, online, adminPw, onL
 
 function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
   const [pw, setPw] = useState('')
-  const [newArea, setNewArea] = useState('')
-  const [newCheck, setNewCheck] = useState('')
   const [pw1, setPw1] = useState('')
   const [rpw, setRpw] = useState('')
   const [busy, setBusy] = useState(false)
@@ -375,16 +444,6 @@ function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
     catch (e) { toast(e.status === 401 ? 'Wrong password' : "Couldn't check password: " + e.message) }
     finally { setBusy(false) }
   }
-
-  const push = async (next) => {
-    setBusy(true)
-    try { const saved = await api.saveSetup(next, adminPw); setSetup(saved); toast('Updated') }
-    catch (e) {
-      if (e.status === 401) { setAdminPw(''); toast('Password has changed — unlock again') }
-      else toast("Couldn't save the change: " + e.message)
-    } finally { setBusy(false) }
-  }
-
   const changePw = async () => {
     if (pw1.length < 4) { toast('Use at least 4 characters'); return }
     setBusy(true)
@@ -392,7 +451,6 @@ function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
     catch (e) { toast("Couldn't change password: " + e.message) }
     finally { setBusy(false) }
   }
-
   const changeRangerPw = async () => {
     if (rpw.length < 3) { toast('Use at least 3 characters'); return }
     setBusy(true)
@@ -401,15 +459,13 @@ function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
     finally { setBusy(false) }
   }
 
-  const label = { font: '600 13px var(--display)', letterSpacing: '.06em', textTransform: 'uppercase' }
-
   return (
     <div className="view" style={{ paddingTop: 0 }}>
-      <details className="admin">
+      <details className="admin" id="clerk-tools">
         <summary>Clerk tools</summary>
         {!adminPw ? (
           <div className="lock" style={{ marginTop: 10 }}>
-            <p className="hint" style={{ margin: 0 }}>Enter the Clerk's password to manage areas and checks, or to delete inspections.</p>
+            <p className="hint" style={{ margin: 0 }}>Enter the Clerk's password to edit checklists, delete inspections or change passwords.</p>
             <div className="inline">
               <input id="admin-pw" type="password" value={pw} placeholder="Password" onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && unlock()} />
               <button className="btn ghost small-btn" onClick={unlock} disabled={busy || !online}>Unlock</button>
@@ -417,48 +473,21 @@ function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
           </div>
         ) : (
           <>
-            <p className="hint">Changes apply to everyone using the app. <button className="addnote" onClick={() => setAdminPw('')}>Lock</button></p>
-            <strong style={label}>Areas</strong>
-            <div className="chips">
-              {setup.areas.map((a, i) => (
-                <span className="chip" key={a}>{a}
-                  <button aria-label={'Remove ' + a} disabled={busy || setup.areas.length <= 1}
-                    onClick={() => push({ ...setup, areas: setup.areas.filter((_, j) => j !== i) })}>×</button>
-                </span>
-              ))}
-            </div>
-            <div className="inline">
-              <input id="new-area" value={newArea} placeholder="Add an area" onChange={(e) => setNewArea(e.target.value)} />
-              <button className="btn ghost small-btn" disabled={busy}
-                onClick={() => { const v = newArea.trim(); if (!v || setup.areas.includes(v)) return; setNewArea(''); push({ ...setup, areas: [...setup.areas, v] }) }}>Add</button>
-            </div>
-            <div style={{ height: 14 }} />
-            <strong style={label}>Checks</strong>
-            <div className="chips">
-              {setup.checks.map((c, i) => (
-                <span className="chip" key={c.id}>{c.label}
-                  <button aria-label={'Remove ' + c.label} disabled={busy || setup.checks.length <= 1}
-                    onClick={() => push({ ...setup, checks: setup.checks.filter((_, j) => j !== i) })}>×</button>
-                </span>
-              ))}
-            </div>
-            <div className="inline">
-              <input id="new-check" value={newCheck} placeholder="Add a check, e.g. Benches" onChange={(e) => setNewCheck(e.target.value)} />
-              <button className="btn ghost small-btn" disabled={busy}
-                onClick={() => { const v = newCheck.trim(); if (!v) return; setNewCheck(''); push({ ...setup, checks: [...setup.checks, { id: 'c' + Date.now().toString(36), label: v }] }) }}>Add</button>
-            </div>
-            <div style={{ height: 14 }} />
-            <strong style={label}>Change ranger login password</strong>
-            <div className="inline" style={{ marginTop: 8 }}>
-              <input id="new-ranger-pw" type="text" value={rpw} placeholder="New ranger password" autoComplete="off" onChange={(e) => setRpw(e.target.value)} />
-              <button className="btn ghost small-btn" disabled={busy} onClick={changeRangerPw}>Change</button>
-            </div>
-            <div style={{ height: 14 }} />
-            <strong style={label}>Change Clerk password</strong>
-            <div className="inline" style={{ marginTop: 8 }}>
-              <input id="new-pw" type="password" value={pw1} placeholder="New password" onChange={(e) => setPw1(e.target.value)} />
-              <button className="btn ghost small-btn" disabled={busy} onClick={changePw}>Change</button>
-            </div>
+            <p className="hint">Unlocked. <button className="addnote" onClick={() => setAdminPw('')}>Lock</button></p>
+            <ChecklistEditor setup={setup} setSetup={setSetup} adminPw={adminPw} setAdminPw={setAdminPw} toast={toast} online={online} />
+            <div className="subhead">Passwords</div>
+            <label className="f">Ranger login password
+              <div className="inline">
+                <input id="new-ranger-pw" type="text" value={rpw} placeholder="New ranger password" autoComplete="off" onChange={(e) => setRpw(e.target.value)} />
+                <button className="btn ghost small-btn" disabled={busy} onClick={changeRangerPw}>Change</button>
+              </div>
+            </label>
+            <label className="f" style={{ marginTop: 10 }}>Clerk password
+              <div className="inline">
+                <input id="new-pw" type="password" value={pw1} placeholder="New Clerk password" onChange={(e) => setPw1(e.target.value)} />
+                <button className="btn ghost small-btn" disabled={busy} onClick={changePw}>Change</button>
+              </div>
+            </label>
           </>
         )}
       </details>
@@ -466,22 +495,164 @@ function AdminPanel({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
   )
 }
 
+/* ---------- checklist editor (Clerk) ---------- */
+
+const uid = (p) => p + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+const move = (arr, i, d) => { const a = [...arr]; const j = i + d; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a }
+
+function ItemList({ items, onChange, addLabel }) {
+  const [text, setText] = useState('')
+  const add = () => { const v = text.trim(); if (!v) return; onChange([...items, { id: uid('i'), label: v }]); setText('') }
+  return (
+    <div className="ed-items">
+      {items.map((it, i) => (
+        <div className="ed-item" key={it.id}>
+          <input aria-label="Item name" value={it.label} onChange={(e) => onChange(items.map((x) => x.id === it.id ? { ...x, label: e.target.value } : x))} />
+          <button className="icon" title="Move up" aria-label="Move up" disabled={i === 0} onClick={() => onChange(move(items, i, -1))}>↑</button>
+          <button className="icon" title="Move down" aria-label="Move down" disabled={i === items.length - 1} onClick={() => onChange(move(items, i, 1))}>↓</button>
+          <button className="icon del" title="Remove" aria-label={'Remove ' + it.label} onClick={() => onChange(items.filter((x) => x.id !== it.id))}>×</button>
+        </div>
+      ))}
+      <div className="inline">
+        <input value={text} placeholder={addLabel} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+        <button className="btn ghost small-btn" onClick={add}>Add</button>
+      </div>
+    </div>
+  )
+}
+
+function ChecklistEditor({ setup, setSetup, adminPw, setAdminPw, toast, online }) {
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(setup)))
+  const [sel, setSel] = useState(() => setup.areas[0]?.id || 'common')
+  const [newArea, setNewArea] = useState('')
+  const [newSection, setNewSection] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(setup)
+
+  // Pick up changes saved from another device when nothing is being edited here.
+  useEffect(() => { if (!dirty) setDraft(JSON.parse(JSON.stringify(setup))) }, [setup]) // eslint-disable-line
+
+  const area = draft.areas.find((a) => a.id === sel)
+  const setArea = (patch) => setDraft((d) => ({ ...d, areas: d.areas.map((a) => a.id === sel ? { ...a, ...patch } : a) }))
+  const setSections = (fn) => setArea({ sections: fn(area.sections) })
+
+  const save = async () => {
+    const names = draft.areas.map((a) => a.name.trim().toLowerCase())
+    if (names.some((n) => !n)) { toast('Every area needs a name'); return }
+    if (new Set(names).size !== names.length) { toast('Two areas have the same name'); return }
+    setBusy(true)
+    try { const saved = await api.saveSetup(draft, adminPw); setSetup(saved); setDraft(JSON.parse(JSON.stringify(saved))); toast('Checklists saved') }
+    catch (e) {
+      if (e.status === 401) { setAdminPw(''); toast('Password has changed — unlock again') }
+      else toast("Couldn't save: " + e.message)
+    } finally { setBusy(false) }
+  }
+
+  const addArea = () => {
+    const v = newArea.trim(); if (!v) return
+    if (draft.areas.some((a) => a.name.toLowerCase() === v.toLowerCase())) { toast('There is already an area called ' + v); return }
+    const a = { id: uid('a'), name: v, sections: [] }
+    setDraft((d) => ({ ...d, areas: [...d.areas, a] })); setSel(a.id); setNewArea('')
+  }
+  const removeArea = () => {
+    setDraft((d) => ({ ...d, areas: d.areas.filter((a) => a.id !== sel) }))
+    setSel(draft.areas.find((a) => a.id !== sel)?.id || 'common'); setConfirm('')
+  }
+  const addSection = () => {
+    const v = newSection.trim(); if (!v) return
+    setSections((ss) => [...ss, { id: uid('s'), title: v, items: [] }]); setNewSection('')
+  }
+
+  return (
+    <div className="editor">
+      <div className="subhead">Checklists</div>
+      <label className="f">Edit checklist for
+        <select id="ed-area" value={sel} onChange={(e) => { setSel(e.target.value); setConfirm('') }}>
+          <option value="common">{draft.commonTitle} (every area)</option>
+          {draft.areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+      </label>
+
+      {sel === 'common' && (
+        <div className="ed-section">
+          <p className="hint" style={{ margin: 0 }}>These checks appear at the top of every area's inspection.</p>
+          <ItemList items={draft.common} addLabel="Add a check, e.g. Trees & hedges" onChange={(items) => setDraft((d) => ({ ...d, common: items }))} />
+        </div>
+      )}
+
+      {area && (
+        <>
+          <label className="f">Area name
+            <input id="ed-area-name" value={area.name} onChange={(e) => setArea({ name: e.target.value })} />
+          </label>
+          {area.sections.length === 0 && <p className="hint">No equipment listed yet. This area only has the common checks. Add a section below (e.g. Benches, Litter bins).</p>}
+          {area.sections.map((s, si) => (
+            <div className="ed-section" key={s.id}>
+              <div className="ed-sec-head">
+                <input className="ed-sec-title" aria-label="Section name" value={s.title}
+                  onChange={(e) => setSections((ss) => ss.map((x) => x.id === s.id ? { ...x, title: e.target.value } : x))} />
+                <button className="icon" title="Move section up" aria-label="Move section up" disabled={si === 0} onClick={() => setSections((ss) => move(ss, si, -1))}>↑</button>
+                <button className="icon" title="Move section down" aria-label="Move section down" disabled={si === area.sections.length - 1} onClick={() => setSections((ss) => move(ss, si, 1))}>↓</button>
+                <button className="icon del" title="Remove section" aria-label={'Remove section ' + s.title} onClick={() => setConfirm('sec:' + s.id)}>×</button>
+              </div>
+              {confirm === 'sec:' + s.id && (
+                <div className="confirm">Remove “{s.title}” and its {s.items.length} item{s.items.length === 1 ? '' : 's'}?
+                  <button className="btn danger small-btn" onClick={() => { setSections((ss) => ss.filter((x) => x.id !== s.id)); setConfirm('') }}>Remove</button>
+                  <button className="btn ghost small-btn" onClick={() => setConfirm('')}>Keep</button>
+                </div>
+              )}
+              <ItemList items={s.items} addLabel={'Add to ' + s.title + ', e.g. Bin 4 (by the gate)'}
+                onChange={(items) => setSections((ss) => ss.map((x) => x.id === s.id ? { ...x, items } : x))} />
+            </div>
+          ))}
+          <div className="inline">
+            <input id="ed-new-section" value={newSection} placeholder="Add a section, e.g. Dog bins" onChange={(e) => setNewSection(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addSection()} />
+            <button className="btn ghost small-btn" onClick={addSection}>Add section</button>
+          </div>
+          {confirm === 'area'
+            ? <div className="confirm">Remove the area “{area.name}”? Past inspections are kept.
+                <button className="btn danger small-btn" onClick={removeArea} disabled={draft.areas.length <= 1}>Remove area</button>
+                <button className="btn ghost small-btn" onClick={() => setConfirm('')}>Keep</button>
+              </div>
+            : <button className="addnote danger-link" onClick={() => setConfirm('area')}>Remove this area…</button>}
+        </>
+      )}
+
+      <div className="inline" style={{ marginTop: 6 }}>
+        <input id="ed-new-area" value={newArea} placeholder="Add a new area" onChange={(e) => setNewArea(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addArea()} />
+        <button className="btn ghost small-btn" onClick={addArea}>Add area</button>
+      </div>
+
+      <div className={'savebar' + (dirty ? ' on' : '')}>
+        <span>{dirty ? 'Unsaved checklist changes' : 'All checklist changes saved'}</span>
+        <div className="actions">
+          <button className="btn ghost small-btn" disabled={!dirty || busy} onClick={() => { setDraft(JSON.parse(JSON.stringify(setup))); if (!setup.areas.some((a) => a.id === sel) && sel !== 'common') setSel(setup.areas[0]?.id || 'common') }}>Discard</button>
+          <button className="btn small-btn" id="ed-save" disabled={!dirty || busy || !online} onClick={save}>{busy ? 'Saving…' : 'Save checklists'}</button>
+        </div>
+      </div>
+      <p className="hint" style={{ marginTop: 0 }}>Removing an item doesn't affect past inspections. They still show it on the Year sheet.</p>
+    </div>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 
 function HistoryView({ areas, list, onOpen }) {
-  const [area, setArea] = useState('')
+  const [areaId, setAreaId] = useState('')
   const [show, setShow] = useState('all')
+  const area = areas.find((a) => a.id === areaId)
   const rows = list
-    .filter((i) => (!area || i.area === area) && (show === 'all' || i.worst === 'act' || i.worst === 'mon'))
+    .filter((i) => (!area || recordMatchesArea(i, area)) && (show === 'all' || i.worst === 'act' || i.worst === 'mon'))
     .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.updatedAt || '').localeCompare(a.updatedAt || ''))
 
   return (
     <section className="view">
       <div className="filters">
         <label className="f">Area
-          <select id="h-area" value={area} onChange={(e) => setArea(e.target.value)}>
+          <select id="h-area" value={areaId} onChange={(e) => setAreaId(e.target.value)}>
             <option value="">All areas</option>
-            {areas.map((a) => <option key={a}>{a}</option>)}
+            {areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </label>
         <label className="f">Show
@@ -496,17 +667,19 @@ function HistoryView({ areas, list, onOpen }) {
         {rows.map((i) => {
           const issues = Object.values(i.items || {}).filter((x) => x.status === 'act' || x.status === 'mon').sort((a, b) => ST[b.status].r - ST[a.status].r)
           const w = ST[i.worst] ? i.worst : 'ok'
+          const n = Object.keys(i.items || {}).length
           return (
             <button key={i.id} className="card" onClick={() => onOpen(i)}>
               <div className="card-top"><strong>{i.area}</strong><span className="date">{fmtDate(i.date)}</span></div>
               <div className="tally">
                 <span className={'pill p-' + ST[w].c}>{ST[w].long}</span>
+                <span className="pill p-none">{n} item{n === 1 ? '' : 's'} checked</span>
                 {i._pending && <span className="pill p-none">Not yet uploaded</span>}
                 {i.inspector && <span className="hint">by {i.inspector}</span>}
               </div>
               {issues.length > 0 && (
                 <ul className="issues">
-                  {issues.map((x, n) => <li key={n}><b style={{ color: `var(--${x.status})` }}>{ST[x.status].l}</b> · {x.label}{x.note ? ` — ${x.note}` : ''}</li>)}
+                  {issues.map((x, k) => <li key={k}><b style={{ color: `var(--${x.status})` }}>{ST[x.status].l}</b> · {x.label}{x.note ? ` — ${x.note}` : ''}</li>)}
                 </ul>
               )}
               {i.comments && <div className="hint">{i.comments}</div>}
@@ -520,57 +693,73 @@ function HistoryView({ areas, list, onOpen }) {
 
 /* ------------------------------------------------------------------ */
 
-function YearView({ areas, checks, list, onOpen }) {
+function YearView({ setup, list, onOpen }) {
+  const areas = setup.areas
   const years = useMemo(() => {
     const s = new Set([new Date().getFullYear()])
     list.forEach((i) => i.date && s.add(+i.date.slice(0, 4)))
     return [...s].sort((a, b) => b - a)
   }, [list])
-  const [area, setArea] = useState(areas[0] || '')
+  const [areaId, setAreaId] = useState(areas[0]?.id || '')
   const [year, setYear] = useState(years[0])
+  const area = areas.find((a) => a.id === areaId) || areas[0]
 
-  const months = useMemo(() => {
+  const { months, extra } = useMemo(() => {
     const m = Array.from({ length: 12 }, () => ({ items: {}, recs: [], comments: [] }))
-    list.filter((i) => i.area === area && i.date && i.date.startsWith(year + '-'))
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .forEach((i) => {
-        const mm = +i.date.slice(5, 7) - 1
-        m[mm].recs.push(i)
-        if (i.comments) m[mm].comments.push(i.comments)
-        for (const k in i.items || {}) {
-          const s = i.items[k].status, cur = m[mm].items[k]
-          if (ST[s] && (!cur || ST[s].r > ST[cur.status].r)) m[mm].items[k] = { status: s, note: i.items[k].note }
-        }
-      })
-    return m
+    const seen = {}
+    if (area) {
+      list.filter((i) => recordMatchesArea(i, area) && i.date && i.date.startsWith(year + '-'))
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .forEach((i) => {
+          const mm = +i.date.slice(5, 7) - 1
+          m[mm].recs.push(i)
+          if (i.comments) m[mm].comments.push(i.comments)
+          for (const k in i.items || {}) {
+            const it = i.items[k], cur = m[mm].items[k]
+            seen[k] = it.label || k
+            if (ST[it.status] && (!cur || ST[it.status].r > ST[cur.status].r)) m[mm].items[k] = { status: it.status, note: it.note }
+          }
+        })
+    }
+    return { months: m, extra: seen }
   }, [list, area, year])
+
+  const sections = sectionsFor(setup, area)
+  const known = new Set(sections.flatMap((s) => s.items.map((i) => i.id)))
+  const retired = Object.entries(extra).filter(([k]) => !known.has(k)).map(([id, label]) => ({ id, label }))
+  const groups = retired.length ? [...sections, { id: 'retired', title: 'No longer on the checklist', items: retired }] : sections
 
   const now = new Date()
   const curM = now.getFullYear() === +year ? now.getMonth() : -1
 
   const exportCsv = () => {
     const q = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`
-    const lines = [[year], ['Area: ' + area], ['Risk', ...MONTHS, 'Comments']]
-    checks.forEach((c) => {
-      const notes = months.map((mo, i) => mo.items[c.id]?.note ? `${MONTHS[i]}: ${mo.items[c.id].note}` : '').filter(Boolean).join('; ')
-      lines.push([c.label, ...months.map((mo) => mo.items[c.id] ? ST[mo.items[c.id].status].long : ''), notes])
+    const lines = [[year], ['Area: ' + area.name], ['Item', ...MONTHS, 'Comments']]
+    groups.forEach((g) => {
+      lines.push([g.title.toUpperCase()])
+      g.items.forEach((c) => {
+        const notes = months.map((mo, i) => mo.items[c.id]?.note ? `${MONTHS[i]}: ${mo.items[c.id].note}` : '').filter(Boolean).join('; ')
+        lines.push([c.label, ...months.map((mo) => mo.items[c.id] ? ST[mo.items[c.id].status].long : ''), notes])
+      })
     })
     lines.push(['General comments', ...months.map((mo) => mo.comments.join(' / ')), ''])
     const csv = lines.map((r) => r.map(q).join(',')).join('\r\n')
     const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = `${area.replace(/[^\w]+/g, '-')}-${year}-inspections.csv`
+    a.download = `${area.name.replace(/[^\w]+/g, '-')}-${year}-inspections.csv`
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
+
+  if (!area) return <section className="view"><div className="empty">No areas set up yet.</div></section>
 
   return (
     <section className="view">
       <div className="filters">
         <label className="f">Area
-          <select id="y-area" value={area} onChange={(e) => setArea(e.target.value)}>
-            {areas.map((a) => <option key={a}>{a}</option>)}
+          <select id="y-area" value={area.id} onChange={(e) => setAreaId(e.target.value)}>
+            {areas.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </label>
         <label className="f">Year
@@ -584,22 +773,27 @@ function YearView({ areas, checks, list, onOpen }) {
       </div>
       <div className="gridwrap">
         <table className="yr">
-          <thead><tr><th>Check</th>{MONTHS.map((x, i) => <th key={x} className={i === curM ? 'cur' : ''}>{x}</th>)}</tr></thead>
+          <thead><tr><th>Item</th>{MONTHS.map((x, i) => <th key={x} className={i === curM ? 'cur' : ''}>{x}</th>)}</tr></thead>
           <tbody>
-            {checks.map((c) => (
-              <tr key={c.id}>
-                <td>{c.label}</td>
-                {months.map((mo, i) => {
-                  const it = mo.items[c.id]
-                  return (
-                    <td key={i} className={i === curM ? 'cur' : ''}>
-                      {it && <button className={'cell c-' + ST[it.status].c} style={{ border: 0, cursor: 'pointer' }}
-                        title={ST[it.status].long + (it.note ? ': ' + it.note : '')}
-                        onClick={() => onOpen(mo.recs[mo.recs.length - 1])}>{ST[it.status].g}</button>}
-                    </td>
-                  )
-                })}
-              </tr>
+            {groups.map((g) => (
+              <React.Fragment key={g.id}>
+                <tr className="grp"><td colSpan={13}>{g.title}</td></tr>
+                {g.items.map((c) => (
+                  <tr key={c.id}>
+                    <td>{c.label}</td>
+                    {months.map((mo, i) => {
+                      const it = mo.items[c.id]
+                      return (
+                        <td key={i} className={i === curM ? 'cur' : ''}>
+                          {it && <button className={'cell c-' + ST[it.status].c} style={{ border: 0, cursor: 'pointer' }}
+                            title={ST[it.status].long + (it.note ? ': ' + it.note : '')}
+                            onClick={() => onOpen(mo.recs[mo.recs.length - 1])}>{ST[it.status].g}</button>}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </React.Fragment>
             ))}
             <tr>
               <td className="hint">Inspections</td>
