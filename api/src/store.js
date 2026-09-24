@@ -10,25 +10,7 @@ const BLOB = 'data.json'
 const DEFAULT_PASSWORD = 'ranger'        // Clerk (admin) starting password
 const DEFAULT_RANGER_PASSWORD = 'dpc'    // Ranger login starting password
 
-const DEFAULT_SETUP = {
-  areas: [
-    'Green Areas – Common Land',
-    'Turkey Farm',
-    'Burnham Green',
-    'Church Area',
-    'Nutcroft HHL',
-    'Datchworth Village Green'
-  ],
-  checks: [
-    { id: 'debris', label: 'Debris, litter, stones etc' },
-    { id: 'dog', label: 'Dog excrement (if particularly noticeable)' },
-    { id: 'fences', label: 'Fences' },
-    { id: 'grass', label: 'Grass cutting observations' },
-    { id: 'notice', label: 'Notice boards' },
-    { id: 'uneven', label: 'Uneven surfaces' },
-    { id: 'signs', label: 'Village signs' }
-  ]
-}
+const { defaultSetup } = require('./checklists')
 
 class ConfigError extends Error {}
 
@@ -55,7 +37,7 @@ function makeSecret(pw) {
 
 function freshData() {
   return {
-    setup: JSON.parse(JSON.stringify(DEFAULT_SETUP)),
+    setup: defaultSetup(),
     inspections: [],
     admin: makeSecret(DEFAULT_PASSWORD),
     ranger: makeSecret(DEFAULT_RANGER_PASSWORD)
@@ -68,7 +50,10 @@ async function read() {
   try {
     const buf = await blob.downloadToBuffer()
     const props = await blob.getProperties()
-    return { data: JSON.parse(buf.toString('utf8')), etag: props.etag }
+    const data = JSON.parse(buf.toString('utf8'))
+    // Version 1 had one generic checklist; move to per-area checklists.
+    if (!data.setup || data.setup.version !== 2) data.setup = defaultSetup()
+    return { data, etag: props.etag }
   } catch (e) {
     if (e.statusCode === 404) return { data: freshData(), etag: null }
     throw e
