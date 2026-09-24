@@ -12,7 +12,7 @@ function clean(input) {
   const items = {}
   for (const [k, v] of Object.entries(input.items || {})) {
     if (!v || !STATUSES.includes(v.status)) continue
-    items[clip(k, 60)] = { status: v.status, note: clip(v.note, 1000), label: clip(v.label, 200) }
+    items[clip(k, 90)] = { status: v.status, note: clip(v.note, 1000), label: clip(v.label, 200), section: clip(v.section, 120) }
   }
   if (!Object.keys(items).length) throw fail(400, 'Mark at least one check')
   const rank = { na: 0, ok: 1, mon: 2, act: 3 }
@@ -22,6 +22,7 @@ function clean(input) {
   return {
     id: input.id,
     area: clip(input.area, 120),
+    areaId: clip(input.areaId, 90),
     date: input.date,
     inspector: clip(input.inspector, 120),
     items,

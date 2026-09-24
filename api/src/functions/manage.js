@@ -1,5 +1,6 @@
 const { app } = require('@azure/functions')
 const store = require('../store')
+const { cleanSetup } = require('../checklists')
 const { json, handle, fail, body } = require('../http')
 
 // Note: routes must not start with "admin" — Azure Functions reserves that word.
@@ -50,21 +51,14 @@ app.http('manageRangerPassword', {
   })
 })
 
-// PUT /api/setup — update the list of areas and checks.
+// PUT /api/setup — save the areas and their checklists.
 app.http('saveSetup', {
   methods: ['PUT'],
   authLevel: 'anonymous',
   route: 'setup',
   handler: handle(async (request) => {
     const pw = request.headers.get('x-admin-password')
-    const input = await body(request)
-    const areas = [...new Set((input.areas || []).map((a) => String(a).trim().slice(0, 120)).filter(Boolean))]
-    const checks = (input.checks || [])
-      .filter((c) => c && c.id && c.label)
-      .map((c) => ({ id: String(c.id).slice(0, 60), label: String(c.label).trim().slice(0, 200) }))
-    if (!areas.length) throw fail(400, 'Keep at least one area')
-    if (!checks.length) throw fail(400, 'Keep at least one check')
-    const setup = { areas, checks }
+    const setup = cleanSetup(await body(request))
     await store.update((data) => {
       if (!store.passwordOk(data, pw)) throw fail(401, 'Wrong password')
       data.setup = setup
